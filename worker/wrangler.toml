@@ -1,0 +1,10 @@
+name = "globlish-translator"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Create this with:
+#   wrangler kv namespace create GLOBLISH_KV
+# then paste the returned "id" below.
+[[kv_namespaces]]
+binding = "GLOBLISH_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
