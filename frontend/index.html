@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Globlish Translator</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🫧 Globlish Translator</h1>
+      <p class="subtitle">glop gloop zorp nor glop gloop glorp.</p>
+    </header>
+
+    <div class="panel">
+      <div class="lang-bar">
+        <span id="fromLabel" class="lang-label">English</span>
+        <button id="swapBtn" title="Swap languages">⇄</button>
+        <span id="toLabel" class="lang-label">Globlish</span>
+      </div>
+
+      <div class="boxes">
+        <textarea id="inputText" placeholder="Type English here..."></textarea>
+        <textarea id="outputText" placeholder="Translation appears here..." readonly></textarea>
+      </div>
+
+      <div class="controls">
+        <button id="translateBtn">Translate</button>
+        <span id="status" class="status"></span>
+      </div>
+
+      <details class="define-panel">
+        <summary>Teach Globlish a word</summary>
+        <div class="define-row">
+          <input id="defEn" type="text" placeholder="English word (e.g. sandwich)" />
+          <input id="defGl" type="text" placeholder="Globlish word (e.g. gronwich)" />
+          <select id="defPos">
+            <option value="noun">noun</option>
+            <option value="verb">verb</option>
+            <option value="adj">adjective</option>
+          </select>
+          <button id="defBtn">Save</button>
+        </div>
+        <div id="defStatus" class="status"></div>
+      </details>
+    </div>
+
+    <footer>
+      <p>
+        Unknown words are invented automatically using Globlish's sound
+        rules, and remembered forever once coined — so the same word
+        always translates the same way for everyone.
+      </p>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
