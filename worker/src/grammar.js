@@ -44,6 +44,7 @@ const ENGLISH_PAST_IRREGULAR = {
   do: "did", run: "ran", be: "was",
 };
 const GERUND_SPECIAL = { run: "running", swim: "swimming", sit: "sitting" };
+const THIRD_PERSON_SINGULAR_PRONOUNS = new Set(["hi", "shi", "it"]);
 
 const FIXED_TOOP_MEANINGS = {
   gunder: "completely fail to understand",
@@ -78,6 +79,32 @@ function splitSentences(text) {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
+function normalizeInput(sentence) {
+  return sentence
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\b([a-z]+),\s+/gi, "$1 ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+function isLikelyName(originalWord, lowerWord, index) {
+  if (!originalWord || DICTIONARY[lowerWord]) return false;
+  // Treat capitalized unknown words as proper names. This preserves names
+  // without relying on KV, which keeps EN -> GL -> EN round trips stable.
+  return /^[A-Z][A-Za-z'-]*$/.test(originalWord) && (index > 0 || lowerWord.length > 2);
+}
+
+function encodeNameToken(name) {
+  return "nam-" + name.toLowerCase().replace(/[^a-z0-9-]/g, "");
+}
+
+function decodeNameToken(token) {
+  const name = token.slice(4).replace(/-/g, " ");
+  return name.split(" ").filter(Boolean).map(capitalize).join(" ");
+}
+
 function expandContractions(sentence) {
   let s = sentence;
   for (const [contraction, expansion] of Object.entries(CONTRACTIONS)) {
@@ -103,6 +130,18 @@ function toEnglishGerund(root) {
   return root + "ing";
 }
 
+function toThirdPersonPresent(root) {
+  if (root === "have") return "has";
+  if (root === "be") return "is";
+  if (/(s|x|z|ch|sh|o)$/.test(root)) return root + "es";
+  if (/[^aeiou]y$/.test(root)) return root.slice(0, -1) + "ies";
+  return root + "s";
+}
+
+function usesThirdPersonPresent(subjectWord, verbItem) {
+  return THIRD_PERSON_SINGULAR_PRONOUNS.has(subjectWord) || !!verbItem.name || subjectWord.startsWith("nam-");
+}
+
 // ===========================================================
 // ENGLISH -> GLOBLISH
 // ===========================================================
@@ -122,7 +161,11 @@ async function translateSentenceToGloblish(rawSentence, env) {
   let body = rawSentence.replace(/[.!?]+$/, "").trim();
   if (!body) return "";
 
-  body = expandContractions(body.toLowerCase());
+  const originalWords = expandContractions(normalizeInput(body))
+    .replace(/(\w+)'s\b/g, "$1 __POSS__")
+    .split(/\s+/)
+    .filter(Boolean);
+  body = expandContractions(normalizeInput(body.toLowerCase()));
   // Mark possessive 's ("friend's" -> "friend __POSS__") before tokenizing.
   body = body.replace(/(\w+)'s\b/g, "$1 __POSS__");
 
@@ -134,13 +177,16 @@ async function translateSentenceToGloblish(rawSentence, env) {
   if (words.length && QUESTION_AUX_STRIP.has(words[0])) {
     isQuestion = true;
     words.shift();
-  } else if (words.length && ["is", "are", "was", "were"].includes(words[0])) {
+    originalWords.shift();
+  } else if (words.length && ["am", "is", "are", "was", "were"].includes(words[0])) {
     // "Is he good?" -> keep the be-verb but flag as question, and move
     // it after the subject so the rest of the pipeline sees normal SVO.
     isQuestion = true;
     const be = words.shift();
+    const originalBe = originalWords.shift();
     // find subject (first pronoun/noun-ish word) to reinsert be after it
     words.splice(1, 0, be);
+    originalWords.splice(1, 0, originalBe);
   }
 
   let negate = false;
@@ -150,12 +196,14 @@ async function translateSentenceToGloblish(rawSentence, env) {
   const willNotIdx = words.findIndex((w, i) => w === "will" && words[i + 1] === "not");
   if (willNotIdx !== -1) {
     words.splice(willNotIdx, 2);
+    originalWords.splice(willNotIdx, 2);
     negate = true;
     tense = "future";
   } else {
     const willIdx = words.indexOf("will");
     if (willIdx !== -1) {
       words.splice(willIdx, 1);
+      originalWords.splice(willIdx, 1);
       tense = "future";
     }
   }
@@ -167,6 +215,7 @@ async function translateSentenceToGloblish(rawSentence, env) {
   if (auxNotIdx !== -1) {
     const aux = words[auxNotIdx];
     words.splice(auxNotIdx, 2);
+    originalWords.splice(auxNotIdx, 2);
     negate = true;
     if (aux === "did") tense = "past";
   }
@@ -175,20 +224,26 @@ async function translateSentenceToGloblish(rawSentence, env) {
   const notIdx = words.indexOf("not");
   if (notIdx !== -1) {
     words.splice(notIdx, 1);
+    originalWords.splice(notIdx, 1);
     negate = true;
   }
 
   // be-verb + gerund -> continuous / past continuous
-  const beIdx = words.findIndex((w) => ["is", "are", "was", "were"].includes(w));
+  const beIdx = words.findIndex((w) => ["am", "is", "are", "was", "were"].includes(w));
   if (beIdx !== -1 && words[beIdx + 1] && words[beIdx + 1].endsWith("ing")) {
     const be = words[beIdx];
     words.splice(beIdx, 1);
+    originalWords.splice(beIdx, 1);
     tense = tense === "future" ? "future continuous"
       : ["was", "were"].includes(be) ? "past continuous" : "continuous";
   } else {
     // standalone gerund without a be-verb, e.g. "Going home is nice" — rare;
     // just treat a lone -ing verb as continuous.
-    const gerundIdx = words.findIndex((w) => w.endsWith("ing") && w.length > 4);
+    const gerundIdx = words.findIndex((w) => {
+      if (!w.endsWith("ing") || w.length <= 4) return false;
+      const root = stripGerund(w);
+      return DICTIONARY[root]?.pos === "verb" || DICTIONARY[root + "e"]?.pos === "verb";
+    });
     if (gerundIdx !== -1 && tense === "present") tense = "continuous";
   }
 
@@ -197,14 +252,15 @@ async function translateSentenceToGloblish(rawSentence, env) {
   let sawVerb = false;
   for (let i = 0; i < words.length; i++) {
     let w = words[i];
+    const originalWord = originalWords[i] || w;
     if (!w) continue;
 
     let possessive = false;
     if (words[i + 1] === "__poss__" || words[i + 1] === "__POSS__") {
       possessive = true;
       words[i + 1] = ""; // consume marker
+      originalWords[i + 1] = "";
     }
-
     if (POSSESSIVE_PRONOUNS[w]) {
       tokens.push({ gl: POSSESSIVE_PRONOUNS[w] + "-um", pos: "pronoun", raw: w });
       continue;
@@ -212,11 +268,22 @@ async function translateSentenceToGloblish(rawSentence, env) {
 
     let plural = false;
     let lookupWord = w;
+
+    if (isLikelyName(originalWord, w, i)) {
+      tokens.push({ gl: encodeNameToken(originalWord), pos: "noun", plural, possessive, raw: w, name: true });
+      continue;
+    }
+
     if (!DICTIONARY[w] && /s$/.test(w) && w.length > 3) {
-      const singular = w.endsWith("es") ? w.slice(0, -2) : w.slice(0, -1);
-      if (DICTIONARY[singular]) {
-        lookupWord = singular;
-        plural = true;
+      const singularGuesses = w.endsWith("es")
+        ? [w.slice(0, -1), w.slice(0, -2)]
+        : [w.slice(0, -1)];
+      for (const singular of singularGuesses) {
+        if (DICTIONARY[singular]) {
+          lookupWord = singular;
+          plural = DICTIONARY[singular].pos !== "verb";
+          break;
+        }
       }
     }
 
@@ -262,6 +329,11 @@ async function translateSentenceToGloblish(rawSentence, env) {
       tokens.push({ gl: entry.gl, pos: entry.pos, plural, possessive, raw: w });
       if (entry.pos === "verb") sawVerb = true;
     } else {
+      // Skip filler auxiliaries once their tense/negation/question work is done.
+      if (["can", "would", "could", "should", "may", "might", "must"].includes(w)) {
+        continue;
+      }
+
       // Truly unknown word -> invent it.
       const looksLikeGerund = /ing$/.test(w) && w.length > 4 && tense.includes("continuous");
       const guessedPos = looksLikeGerund || gerundRoot || (!sawVerb && i > 0 && tense === "present" && !negate)
@@ -326,7 +398,7 @@ export async function translateToEnglish(text, env) {
 async function translateSentenceToEnglish(rawSentence, env) {
   const punctMatch = rawSentence.match(/[.!?]+$/);
   let punct = punctMatch ? punctMatch[0].slice(-1) : ".";
-  let body = rawSentence.replace(/[.!?]+$/, "").trim().toLowerCase();
+  let body = normalizeInput(rawSentence.replace(/[.!?]+$/, "").trim().toLowerCase());
   if (!body) return "";
 
   // Fixed slang phrases, checked whole first.
@@ -466,7 +538,9 @@ async function translateSentenceToEnglish(rawSentence, env) {
         ? `will not be ${toEnglishGerund(verbEn)}`
         : `will be ${toEnglishGerund(verbEn)}`;
     } else {
-      verbPhrase = negate ? `do not ${verbEn}` : verbEn;
+      verbPhrase = negate ? `do not ${verbEn}`
+        : usesThirdPersonPresent(subjectWord, collapsed[0]) ? toThirdPersonPresent(verbEn)
+        : verbEn;
     }
 
     sentenceWords = [...before, verbPhrase, ...after];
@@ -475,9 +549,16 @@ async function translateSentenceToEnglish(rawSentence, env) {
   let sentence = sentenceWords.filter(Boolean).join(" ");
 
   if (isQuestion) {
-    // crude but effective: front the first auxiliary-like word if present,
-    // else just mark with a question mark.
+    // Front an auxiliary when one exists; otherwise form a simple do-question.
+    const before = sentence;
     sentence = sentence.replace(/^(\S+)\s+(am not|is not|are not|was not|were not|am|is|are|was|were|will|did not|do not|will not)\b/, "$2 $1");
+    if (sentence === before && verbIdx !== -1) {
+      const aux = usesThirdPersonPresent(subjectWord, collapsed[0]) ? "does" : "do";
+      const questionSubject = collapsed.slice(0, verbIdx).map((it) => it.en).join(" ");
+      const questionVerb = collapsed[verbIdx].en;
+      const questionAfter = collapsed.slice(verbIdx + 1).map((it) => it.en).join(" ");
+      sentence = [aux, questionSubject, questionVerb, questionAfter].filter(Boolean).join(" ");
+    }
   }
 
   sentence = capitalize(sentence);
@@ -516,6 +597,10 @@ async function resolveGloblishWord(env, word) {
     return { en: `${base.en}'s`, pos: "noun", raw: root };
   }
 
+  if (word.startsWith("nam-") && word.length > 4) {
+    return { en: decodeNameToken(word), pos: "noun", raw: word, rootGl: word, name: true };
+  }
+
   // -toop suffix
   if (word.endsWith("toop") && word.length > 4) {
     const root = word.slice(0, -4);
@@ -534,10 +619,27 @@ async function resolveGloblishWord(env, word) {
   }
 
   const entry = REVERSE_DICTIONARY[word];
-  if (entry) return { en: entry.en, pos: entry.pos, raw: word, rootGl: word };
+  if (entry) {
+    return chooseReverseEntry(word, entry);
+  }
 
   const generated = await lookupEnglishForGloblish(env, word);
   if (generated) return { en: generated.en, pos: generated.pos, raw: word, rootGl: word };
 
   return { en: `[${word}?]`, pos: "noun", raw: word, unknown: true };
+}
+
+
+function chooseReverseEntry(word, entry) {
+  // Prefer the most generally useful English gloss for intentionally
+  // ambiguous Globlish forms. More syntax-aware disambiguation happens before
+  // this function for particles such as da/vu/ri/nor.
+  const preferred = {
+    gloop: { en: "good", pos: "adj" },
+    wi: { en: "we", pos: "pronoun" },
+    un: { en: "one", pos: "number" },
+    nor: { en: "not", pos: "particle" },
+  }[word];
+  if (preferred) return { ...preferred, raw: word, rootGl: word };
+  return { en: entry.en, pos: entry.pos, raw: word, rootGl: word };
 }
