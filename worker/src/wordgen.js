@@ -1,4 +1,6 @@
 // wordgen.js
+import { REVERSE_DICTIONARY } from "./dictionary.js";
+
 // Invents new Globlish words for English words the dictionary doesn't
 // know (and vice versa isn't needed, since every Globlish word that
 // exists either came from the dictionary or from this generator, and
@@ -51,7 +53,7 @@ function pick(rng, arr) {
 // Build a candidate Globlish word from an English root + attempt number.
 // `attempt` lets us regenerate deterministically if the first guess
 // collides with an existing word.
-function buildCandidate(root, attempt) {
+export function buildCandidate(root, attempt) {
   const seed = hashString(root.toLowerCase() + "::" + attempt);
   const rng = mulberry32(seed);
 
@@ -80,11 +82,17 @@ export async function generateOrLookupGloblish(env, root, pos = "noun") {
   }
 
   let candidate = buildCandidate(root, 0);
+  // Avoid colliding with built-in words even when KV is not configured;
+  // otherwise a generated word can reverse-translate as the wrong known word.
+  for (let attempt = 1; REVERSE_DICTIONARY[candidate] && attempt <= 25; attempt++) {
+    candidate = buildCandidate(root, attempt);
+  }
+
   if (env.GLOBLISH_KV) {
-    // Avoid colliding with an existing reverse entry; try a few times.
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    // Avoid colliding with existing generated/manual reverse entries too.
+    for (let attempt = 1; attempt <= 25; attempt++) {
       const collision = await env.GLOBLISH_KV.get("gl:" + candidate);
-      if (!collision) break;
+      if (!collision && !REVERSE_DICTIONARY[candidate]) break;
       candidate = buildCandidate(root, attempt);
     }
     await env.GLOBLISH_KV.put(key, JSON.stringify({ gl: candidate, pos }));
